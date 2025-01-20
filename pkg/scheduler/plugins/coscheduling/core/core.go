@@ -61,6 +61,7 @@ const (
 
 // Manager defines the interfaces for PodGroup management.
 type Manager interface {
+	PreEnqueue(context.Context, *corev1.Pod) (err error)
 	PreFilter(context.Context, *framework.CycleState, *corev1.Pod) (err error)
 	Permit(context.Context, *corev1.Pod) (time.Duration, Status)
 	PostBind(context.Context, *corev1.Pod, string)
@@ -216,12 +217,45 @@ func (pgMgr *PodGroupManager) ActivateSiblings(pod *corev1.Pod, state *framework
 				for _, siblingPod := range toActivePods {
 					namespacedName := util.GetId(siblingPod.Namespace, siblingPod.Name)
 					s.Map[namespacedName] = siblingPod
-					klog.InfoS("ActivateSiblings add pod's key to PodsToActivate map", "pod", namespacedName)
+					klog.V(4).InfoS("ActivateSiblings add pod's key to PodsToActivate map", "pod", namespacedName)
 				}
 				s.Unlock()
 			}
 		}
 	}
+}
+
+// PreEnqueue
+// i.Check whether children in Gang has met the requirements of minimum number under each Gang, and reject the pod if negative.
+// ii.Check whether the Gang is inited, and reject the pod if positive.
+func (pgMgr *PodGroupManager) PreEnqueue(ctx context.Context, pod *corev1.Pod) (err error) {
+	if !util.IsPodNeedGang(pod) {
+		return nil
+	}
+
+	gang := pgMgr.GetGangByPod(pod)
+	if gang == nil {
+		return fmt.Errorf("can't find gang, gangName: %v, podName: %v", util.GetId(pod.Namespace, util.GetGangNameByPod(pod)),
+			util.GetId(pod.Namespace, pod.Name))
+	}
+
+	if !gang.HasGangInit {
+		return fmt.Errorf("gang has not init, gangName: %v, podName: %v", gang.Name,
+			util.GetId(pod.Namespace, pod.Name))
+	}
+
+	// resourceSatisfied means pod will directly pass the PreFilter
+	if gang.getGangMatchPolicy() == extension.GangMatchPolicyOnceSatisfied && gang.isGangOnceResourceSatisfied() {
+		return nil
+	}
+
+	// check minNum
+	if gang.getChildrenNum() < gang.getGangMinNum() {
+		return fmt.Errorf("gang child pod not collect enough, gangName: %v, podName: %v", gang.Name,
+			util.GetId(pod.Namespace, pod.Name))
+	}
+
+	return nil
 }
 
 // PreFilter
@@ -277,17 +311,19 @@ func (pgMgr *PodGroupManager) PreFilter(ctx context.Context, state *framework.Cy
 		if pod.Status.NominatedNodeName != "" {
 			return nil
 		}
-		podScheduleCycle := gang.getChildScheduleCycle(pod)
 		if !gang.isScheduleCycleValid() {
 			preFilterState.skipReject = true
 			return fmt.Errorf("gang scheduleCycle not valid, gangName: %v, podName: %v",
 				gang.Name, util.GetId(pod.Namespace, pod.Name))
 		}
+
+		podScheduleCycle := gang.getChildScheduleCycle(pod)
 		if podScheduleCycle >= gangScheduleCycle {
 			return fmt.Errorf("pod's schedule cycle too large, gangName: %v, podName: %v, podCycle: %v, gangCycle: %v",
 				gang.Name, util.GetId(pod.Namespace, pod.Name), podScheduleCycle, gangScheduleCycle)
 		}
 	}
+
 	return nil
 }
 
@@ -507,7 +543,7 @@ func (pgMgr *PodGroupManager) AllowGangGroup(pod *corev1.Pod, handle framework.H
 		podGangId := util.GetId(waitingPod.GetPod().Namespace, util.GetGangNameByPod(waitingPod.GetPod()))
 		for _, gangIdTmp := range gangSlices {
 			if podGangId == gangIdTmp {
-				klog.InfoS("Permit allows pod from gang", "gang", podGangId, "pod", klog.KObj(waitingPod.GetPod()))
+				klog.V(4).InfoS("Permit allows pod from gang", "gang", podGangId, "pod", klog.KObj(waitingPod.GetPod()))
 				waitingPod.Allow(pluginName)
 				break
 			}

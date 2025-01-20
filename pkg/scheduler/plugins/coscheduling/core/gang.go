@@ -57,10 +57,6 @@ type Gang struct {
 	WaitingForBindChildren map[string]*v1.Pod
 	// pods that have already bound
 	BoundChildren map[string]*v1.Pod
-	// OnceResourceSatisfied indicates whether the gang has ever reached the ResourceSatisfied state，which means the
-	// children number has reached the minNum in the early step,
-	// once this variable is set true, it is irreversible.
-	OnceResourceSatisfied bool
 
 	// only-waiting, only consider waiting pods
 	// waiting-and-running, consider waiting and running pods
@@ -108,11 +104,12 @@ func (gang *Gang) tryInitByPodConfig(pod *v1.Pod, args *config.CoschedulingArgs)
 
 	totalChildrenNum, err := strconv.ParseInt(pod.Annotations[extension.AnnotationGangTotalNum], 10, 32)
 	if err != nil {
-		klog.Errorf("pod's annotation totalNumber illegal, gangName: %v, value: %v",
+		klog.V(4).ErrorS(err, "pod's annotation totalNumber illegal, gangName: %v, value: %v",
 			gang.Name, pod.Annotations[extension.AnnotationGangTotalNum])
 		totalChildrenNum = int64(minRequiredNumber)
 	} else if totalChildrenNum != 0 && totalChildrenNum < int64(minRequiredNumber) {
-		klog.Errorf("pod's annotation totalNumber cannot less than minRequiredNumber, gangName: %v, totalNumber: %v,minRequiredNumber: %v",
+
+		klog.V(4).Infof("pod's annotation totalNumber cannot less than minRequiredNumber, gangName: %v, totalNumber: %v,minRequiredNumber: %v",
 			gang.Name, pod.Annotations[extension.AnnotationGangTotalNum], minRequiredNumber)
 		totalChildrenNum = int64(minRequiredNumber)
 	}
@@ -120,7 +117,7 @@ func (gang *Gang) tryInitByPodConfig(pod *v1.Pod, args *config.CoschedulingArgs)
 
 	mode := pod.Annotations[extension.AnnotationGangMode]
 	if mode != extension.GangModeStrict && mode != extension.GangModeNonStrict {
-		klog.Errorf("pod's annotation GangModeAnnotation illegal, gangName: %v, value: %v",
+		klog.V(4).Infof("pod's annotation GangModeAnnotation illegal, gangName: %v, value: %v",
 			gang.Name, pod.Annotations[extension.AnnotationGangMode])
 		mode = extension.GangModeStrict
 	}
@@ -129,7 +126,7 @@ func (gang *Gang) tryInitByPodConfig(pod *v1.Pod, args *config.CoschedulingArgs)
 	matchPolicy := util.GetGangMatchPolicyByPod(pod)
 	if matchPolicy != extension.GangMatchPolicyOnlyWaiting && matchPolicy != extension.GangMatchPolicyWaitingAndRunning &&
 		matchPolicy != extension.GangMatchPolicyOnceSatisfied {
-		klog.Errorf("pod's annotation AnnotationGangMatchPolicy illegal, gangName: %v, value: %v",
+		klog.V(4).Infof("pod's annotation AnnotationGangMatchPolicy illegal, gangName: %v, value: %v",
 			gang.Name, matchPolicy)
 		matchPolicy = extension.GangMatchPolicyOnceSatisfied
 	}
@@ -140,7 +137,7 @@ func (gang *Gang) tryInitByPodConfig(pod *v1.Pod, args *config.CoschedulingArgs)
 
 	waitTime, err := time.ParseDuration(pod.Annotations[extension.AnnotationGangWaitTime])
 	if err != nil || waitTime <= 0 {
-		klog.Errorf("pod's annotation GangWaitTimeAnnotation illegal, gangName: %v, value: %v",
+		klog.V(4).ErrorS(err, "pod's annotation GangWaitTimeAnnotation illegal, gangName: %v, value: %v",
 			gang.Name, pod.Annotations[extension.AnnotationGangWaitTime])
 		waitTime = args.DefaultTimeout.Duration
 	}
@@ -148,7 +145,7 @@ func (gang *Gang) tryInitByPodConfig(pod *v1.Pod, args *config.CoschedulingArgs)
 
 	groupSlice, err := util.StringToGangGroupSlice(pod.Annotations[extension.AnnotationGangGroups])
 	if err != nil {
-		klog.Errorf("pod's annotation GangGroupsAnnotation illegal, gangName: %v, value: %v",
+		klog.V(4).ErrorS(err, "pod's annotation GangGroupsAnnotation illegal, gangName: %v, value: %v",
 			gang.Name, pod.Annotations[extension.AnnotationGangGroups])
 	}
 	if len(groupSlice) == 0 {
@@ -174,11 +171,11 @@ func (gang *Gang) tryInitByPodGroup(pg *v1alpha1.PodGroup, args *config.Coschedu
 
 	totalChildrenNum, err := strconv.ParseInt(pg.Annotations[extension.AnnotationGangTotalNum], 10, 32)
 	if err != nil {
-		klog.Errorf("podGroup's annotation totalNumber illegal, gangName: %v, value: %v",
+		klog.V(4).ErrorS(err, "podGroup's annotation totalNumber illegal, gangName: %v, value: %v",
 			gang.Name, pg.Annotations[extension.AnnotationGangTotalNum])
 		totalChildrenNum = int64(minRequiredNumber)
 	} else if totalChildrenNum != 0 && totalChildrenNum < int64(minRequiredNumber) {
-		klog.Errorf("podGroup's annotation totalNumber cannot less than minRequiredNumber, gangName:%v, totalNumber: %v,minRequiredNumber: %v",
+		klog.V(4).Infof("podGroup's annotation totalNumber cannot less than minRequiredNumber, gangName:%v, totalNumber: %v,minRequiredNumber: %v",
 			gang.Name, pg.Annotations[extension.AnnotationGangTotalNum], minRequiredNumber)
 		totalChildrenNum = int64(minRequiredNumber)
 	}
@@ -186,7 +183,7 @@ func (gang *Gang) tryInitByPodGroup(pg *v1alpha1.PodGroup, args *config.Coschedu
 
 	mode := pg.Annotations[extension.AnnotationGangMode]
 	if mode != extension.GangModeStrict && mode != extension.GangModeNonStrict {
-		klog.Errorf("podGroup's annotation GangModeAnnotation illegal, gangName: %v, value: %v",
+		klog.V(4).Infof("podGroup's annotation GangModeAnnotation illegal, gangName: %v, value: %v",
 			gang.Name, pg.Annotations[extension.AnnotationGangMode])
 		mode = extension.GangModeStrict
 	}
@@ -195,7 +192,7 @@ func (gang *Gang) tryInitByPodGroup(pg *v1alpha1.PodGroup, args *config.Coschedu
 	matchPolicy := pg.Annotations[extension.AnnotationGangMatchPolicy]
 	if matchPolicy != extension.GangMatchPolicyOnlyWaiting && matchPolicy != extension.GangMatchPolicyWaitingAndRunning &&
 		matchPolicy != extension.GangMatchPolicyOnceSatisfied {
-		klog.Errorf("podGroup's annotation AnnotationGangMatchPolicy illegal, gangName: %v, value: %v",
+		klog.V(4).Infof("podGroup's annotation AnnotationGangMatchPolicy illegal, gangName: %v, value: %v",
 			gang.Name, matchPolicy)
 		matchPolicy = extension.GangMatchPolicyOnceSatisfied
 	}
@@ -209,7 +206,7 @@ func (gang *Gang) tryInitByPodGroup(pg *v1alpha1.PodGroup, args *config.Coschedu
 
 	groupSlice, err := util.StringToGangGroupSlice(pg.Annotations[extension.AnnotationGangGroups])
 	if err != nil {
-		klog.Errorf("podGroup's annotation GangGroupsAnnotation illegal, gangName: %v, value: %v",
+		klog.V(4).ErrorS(err, "podGroup's annotation GangGroupsAnnotation illegal, gangName: %v, value: %v",
 			gang.Name, pg.Annotations[extension.AnnotationGangGroups])
 	}
 	if len(groupSlice) == 0 {
@@ -344,7 +341,7 @@ func (gang *Gang) isGangOnceResourceSatisfied() bool {
 	gang.lock.Lock()
 	defer gang.lock.Unlock()
 
-	return gang.OnceResourceSatisfied
+	return gang.GangGroupInfo.isGangOnceResourceSatisfied()
 }
 
 func (gang *Gang) setChild(pod *v1.Pod) {
@@ -472,10 +469,7 @@ func (gang *Gang) setResourceSatisfied() {
 	gang.lock.Lock()
 	defer gang.lock.Unlock()
 
-	if !gang.OnceResourceSatisfied {
-		gang.OnceResourceSatisfied = true
-		klog.Infof("Gang ResourceSatisfied, gangName: %v", gang.Name)
-	}
+	gang.GangGroupInfo.setResourceSatisfied()
 }
 
 func (gang *Gang) addBoundPod(pod *v1.Pod) {
@@ -487,8 +481,8 @@ func (gang *Gang) addBoundPod(pod *v1.Pod) {
 	gang.BoundChildren[podId] = pod
 
 	klog.Infof("AddBoundPod, gangName: %v, podName: %v", gang.Name, podId)
-	if !gang.OnceResourceSatisfied && len(gang.BoundChildren) >= gang.MinRequiredNumber {
-		gang.OnceResourceSatisfied = true
+	if !gang.GangGroupInfo.isGangOnceResourceSatisfied() {
+		gang.GangGroupInfo.setResourceSatisfied()
 		klog.Infof("Gang ResourceSatisfied due to addBoundPod, gangName: %v", gang.Name)
 	}
 }
@@ -507,6 +501,6 @@ func (gang *Gang) isGangValidForPermit() bool {
 	case extension.GangMatchPolicyWaitingAndRunning:
 		return len(gang.WaitingForBindChildren)+len(gang.BoundChildren) >= gang.MinRequiredNumber
 	default:
-		return len(gang.WaitingForBindChildren) >= gang.MinRequiredNumber || gang.OnceResourceSatisfied == true
+		return len(gang.WaitingForBindChildren) >= gang.MinRequiredNumber || gang.GangGroupInfo.isGangOnceResourceSatisfied()
 	}
 }

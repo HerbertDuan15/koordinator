@@ -40,6 +40,7 @@ type ReservationInfo struct {
 	ResourceNames    []corev1.ResourceName
 	Allocatable      corev1.ResourceList
 	Allocated        corev1.ResourceList
+	Reserved         corev1.ResourceList // reserved inside the reservation
 	AllocatablePorts framework.HostPortInfo
 	AllocatedPorts   framework.HostPortInfo
 	AssignedPods     map[types.UID]*PodRequirement
@@ -80,6 +81,7 @@ func (p *PodRequirement) Clone() *PodRequirement {
 func NewReservationInfo(r *schedulingv1alpha1.Reservation) *ReservationInfo {
 	var parseErrors []error
 	allocatable := reservationutil.ReservationRequests(r)
+	reserved := util.GetNodeReservationFromAnnotation(r.Annotations)
 	resourceNames := quotav1.ResourceNames(allocatable)
 	if r.Spec.AllocatePolicy == schedulingv1alpha1.ReservationAllocatePolicyRestricted {
 		options, err := apiext.GetReservationRestrictedOptions(r.Annotations)
@@ -107,6 +109,7 @@ func NewReservationInfo(r *schedulingv1alpha1.Reservation) *ReservationInfo {
 		Pod:              reservedPod,
 		ResourceNames:    resourceNames,
 		Allocatable:      allocatable,
+		Reserved:         reserved,
 		AllocatablePorts: util.RequestedHostPorts(reservedPod),
 		AssignedPods:     map[types.UID]*PodRequirement{},
 		OwnerMatchers:    ownerMatchers,
@@ -118,6 +121,7 @@ func NewReservationInfoFromPod(pod *corev1.Pod) *ReservationInfo {
 	var parseErrors []error
 
 	allocatable := resource.PodRequests(pod, resource.PodResourcesOptions{})
+	reserved := util.GetNodeReservationFromAnnotation(pod.Annotations)
 	resourceNames := quotav1.ResourceNames(allocatable)
 	options, err := apiext.GetReservationRestrictedOptions(pod.Annotations)
 	if err == nil {
@@ -148,6 +152,7 @@ func NewReservationInfoFromPod(pod *corev1.Pod) *ReservationInfo {
 		Pod:              pod,
 		ResourceNames:    resourceNames,
 		Allocatable:      allocatable,
+		Reserved:         reserved,
 		AllocatablePorts: util.RequestedHostPorts(pod),
 		AssignedPods:     map[types.UID]*PodRequirement{},
 		OwnerMatchers:    ownerMatchers,
@@ -243,6 +248,10 @@ func (ri *ReservationInfo) GetPriority() int32 {
 	return 0
 }
 
+func (ri *ReservationInfo) GetAllocatedPods() int {
+	return len(ri.AssignedPods)
+}
+
 func (ri *ReservationInfo) GetPodOwners() []schedulingv1alpha1.ReservationOwner {
 	if ri.Reservation != nil {
 		return ri.Reservation.Spec.Owners
@@ -258,7 +267,7 @@ func (ri *ReservationInfo) GetPodOwners() []schedulingv1alpha1.ReservationOwner 
 	return nil
 }
 
-func (ri *ReservationInfo) Match(pod *corev1.Pod) bool {
+func (ri *ReservationInfo) MatchOwners(pod *corev1.Pod) bool {
 	if ri.ParseError != nil {
 		return false
 	}
@@ -284,6 +293,45 @@ func (ri *ReservationInfo) IsTerminating() bool {
 	return !ri.GetObject().GetDeletionTimestamp().IsZero()
 }
 
+func (ri *ReservationInfo) GetTaints() []corev1.Taint {
+	if ri.Reservation != nil {
+		return ri.Reservation.Spec.Taints
+	}
+	return nil
+}
+
+// MatchReservationAffinity returns the statuses of whether the reservation affinity matches, whether the reservation
+// taints are tolerated, and whether the reservation name matches.
+func (ri *ReservationInfo) MatchReservationAffinity(reservationAffinity *reservationutil.RequiredReservationAffinity, nodeLabels map[string]string) bool {
+	if reservationAffinity != nil {
+		// NOTE: There are some special scenarios.
+		// For example, the AZ where the Pod wants to select the Reservation is cn-hangzhou, but the Reservation itself
+		// does not have this information, so it needs to perceive the label of the Node when Matching Affinity.
+		fakeNode := &corev1.Node{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:   ri.GetName(),
+				Labels: map[string]string{},
+			},
+		}
+		for k, v := range nodeLabels {
+			fakeNode.Labels[k] = v
+		}
+		for k, v := range ri.GetObject().GetLabels() {
+			fakeNode.Labels[k] = v
+		}
+		return reservationAffinity.MatchAffinity(fakeNode)
+	}
+	return true
+}
+
+func (ri *ReservationInfo) MatchExactMatchSpec(podRequests corev1.ResourceList, spec *apiext.ExactMatchReservationSpec) bool {
+	return apiext.ExactMatchReservation(podRequests, ri.Allocatable, spec)
+}
+
+func (ri *ReservationInfo) FindMatchingUntoleratedTaint(reservationAffinity *reservationutil.RequiredReservationAffinity) (corev1.Taint, bool) {
+	return reservationAffinity.FindMatchingUntoleratedTaint(ri.GetTaints(), reservationutil.DoNotScheduleTaintsFilter)
+}
+
 func (ri *ReservationInfo) Clone() *ReservationInfo {
 	resourceNames := make([]corev1.ResourceName, 0, len(ri.ResourceNames))
 	for _, v := range ri.ResourceNames {
@@ -301,9 +349,12 @@ func (ri *ReservationInfo) Clone() *ReservationInfo {
 		ResourceNames:    resourceNames,
 		Allocatable:      ri.Allocatable.DeepCopy(),
 		Allocated:        ri.Allocated.DeepCopy(),
+		Reserved:         ri.Reserved.DeepCopy(),
 		AllocatablePorts: util.CloneHostPorts(ri.AllocatablePorts),
 		AllocatedPorts:   util.CloneHostPorts(ri.AllocatedPorts),
 		AssignedPods:     assignedPods,
+		OwnerMatchers:    ri.OwnerMatchers,
+		ParseError:       ri.ParseError,
 	}
 }
 
@@ -324,7 +375,12 @@ func (ri *ReservationInfo) UpdateReservation(r *schedulingv1alpha1.Reservation) 
 	ri.Reservation = r
 	ri.Pod = reservationutil.NewReservePod(r)
 	ri.AllocatablePorts = util.RequestedHostPorts(ri.Pod)
-	ri.Allocated = quotav1.Mask(ri.Allocated, ri.ResourceNames)
+	if ri.Allocated != nil {
+		ri.Allocated = quotav1.Mask(ri.Allocated, ri.ResourceNames)
+	}
+	reserved := util.GetNodeReservationFromAnnotation(r.Annotations)
+	ri.Reserved = reserved
+
 	ownerMatchers, err := reservationutil.ParseReservationOwnerMatchers(r.Spec.Owners)
 	if err != nil {
 		klog.ErrorS(err, "Failed to parse reservation owner matchers", "reservation", klog.KObj(r))
@@ -354,6 +410,8 @@ func (ri *ReservationInfo) UpdatePod(pod *corev1.Pod) {
 	ri.Pod = pod
 	ri.AllocatablePorts = util.RequestedHostPorts(pod)
 	ri.Allocated = quotav1.Mask(ri.Allocated, ri.ResourceNames)
+	reserved := util.GetNodeReservationFromAnnotation(pod.Annotations)
+	ri.Reserved = reserved
 
 	owners, err := apiext.GetReservationOwners(pod.Annotations)
 	if err != nil {

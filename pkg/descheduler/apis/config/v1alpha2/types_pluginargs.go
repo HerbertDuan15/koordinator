@@ -69,7 +69,7 @@ type MigrationControllerArgs struct {
 	NodeSelector string `json:"nodeSelector,omitempty"`
 
 	// MaxMigratingGlobally represents the maximum number of pods that can be migrating during migrate globally.
-	MaxMigratingGlobally *int32
+	MaxMigratingGlobally *int32 `json:"maxMigratingGlobally,omitempty"`
 
 	// MaxMigratingPerNode represents he maximum number of pods that can be migrating during migrate per node.
 	MaxMigratingPerNode *int32 `json:"maxMigratingPerNode,omitempty"`
@@ -136,6 +136,8 @@ type MigrationObjectLimiter struct {
 	// MaxMigrating indicates the maximum number of migrations/evictions allowed within the window time.
 	// If configured as 0, the maximum number will be calculated according to MaxMigratingPerWorkload.
 	MaxMigrating *intstr.IntOrString `json:"maxMigrating,omitempty"`
+	// Burst indicates the limiter allows bursts of up to 'burst' to exceed within the time window.
+	Burst int `json:"burst,omitempty"`
 }
 
 // ArbitrationArgs holds arguments used to configure the Arbitration Mechanism.

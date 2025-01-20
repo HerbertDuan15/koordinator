@@ -57,6 +57,12 @@ const (
 	// ElasticQuotaIgnorePodOverhead ignore pod.spec.overhead when accounting pod requests
 	ElasticQuotaIgnorePodOverhead featuregate.Feature = "ElasticQuotaIgnorePodOverhead"
 
+	// ElasticQuotaIgnoreTerminatingPod ignore the terminating pod.
+	ElasticQuotaIgnoreTerminatingPod featuregate.Feature = "ElasticQuotaIgnoreTerminatingPod"
+
+	// ElasticQuotaImmediateIgnoreTerminatingPod ignore the terminating pod immediately.
+	ElasticQuotaImmediateIgnoreTerminatingPod featuregate.Feature = "ElasticQuotaImmediateIgnoreTerminatingPod"
+
 	// ElasticQuotaGuaranteeUsage enable guarantee the quota usage
 	// In some specific scenarios, resources that have been allocated to users are considered
 	// to belong to the users and will not be preempted back.
@@ -70,6 +76,9 @@ const (
 
 	// EnableQuotaAdmission enables quota admission.
 	EnableQuotaAdmission featuregate.Feature = "EnableQuotaAdmission"
+
+	// Enable sync GPU shared resource from Device CRD
+	EnableSyncGPUSharedResource featuregate.Feature = "EnableSyncGPUSharedResource"
 )
 
 var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
@@ -88,6 +97,7 @@ var defaultFeatureGates = map[featuregate.Feature]featuregate.FeatureSpec{
 	DisableDefaultQuota:                    {Default: false, PreRelease: featuregate.Alpha},
 	SupportParentQuotaSubmitPod:            {Default: false, PreRelease: featuregate.Alpha},
 	EnableQuotaAdmission:                   {Default: false, PreRelease: featuregate.Alpha},
+	EnableSyncGPUSharedResource:            {Default: true, PreRelease: featuregate.Alpha},
 }
 
 const (

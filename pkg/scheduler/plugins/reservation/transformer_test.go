@@ -294,6 +294,9 @@ func TestRestoreReservation(t *testing.T) {
 
 	pl.reservationCache.addPod(unmatchedReservation.UID, podAllocatedWithUnmatchedReservation)
 
+	matchRInfo := pl.reservationCache.getReservationInfoByUID(matchedReservation.UID)
+	unmatchedRInfo := pl.reservationCache.getReservationInfoByUID(unmatchedReservation.UID)
+
 	cycleState := framework.NewCycleState()
 	_, restored, status := pl.BeforePreFilter(context.TODO(), cycleState, &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -305,22 +308,33 @@ func TestRestoreReservation(t *testing.T) {
 	assert.True(t, restored)
 	assert.True(t, status.IsSuccess())
 
-	matchRInfo := pl.reservationCache.getReservationInfoByUID(matchedReservation.UID)
+	status = pl.AfterPreFilter(context.TODO(), cycleState, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"test-reservation": "true",
+			},
+		},
+	}, &framework.PreFilterResult{})
+	assert.True(t, status.IsSuccess())
+
 	expectedStat := &stateData{
 		schedulingStateData: schedulingStateData{
 			podRequests:          corev1.ResourceList{},
 			podRequestsResources: framework.NewResource(nil),
 			preemptible:          map[string]corev1.ResourceList{},
 			preemptibleInRRs:     map[string]map[types.UID]corev1.ResourceList{},
-			nodeReservationStates: map[string]nodeReservationState{
+			nodeReservationStates: map[string]*nodeReservationState{
 				node.Name: {
-					nodeName: node.Name,
-					matched:  []*frameworkext.ReservationInfo{matchRInfo},
+					nodeName:         node.Name,
+					matchedOrIgnored: []*frameworkext.ReservationInfo{matchRInfo},
+					unmatched:        []*frameworkext.ReservationInfo{unmatchedRInfo},
 					podRequested: &framework.Resource{
 						MilliCPU: 32000,
 						Memory:   68719476736,
 					},
-					rAllocated: framework.NewResource(nil),
+					rAllocated:    framework.NewResource(nil),
+					preRestored:   true,
+					finalRestored: true,
 				},
 			},
 			nodeReservationDiagnosis: map[string]*nodeDiagnosisState{
@@ -329,6 +343,7 @@ func TestRestoreReservation(t *testing.T) {
 					ownerMatched:             1,
 					affinityUnmatched:        0,
 					isUnschedulableUnmatched: 0,
+					taintsUnmatchedReasons:   map[string]int{},
 				},
 			},
 		},
@@ -351,8 +366,337 @@ func TestRestoreReservation(t *testing.T) {
 	nodeInfo.Generation = 0
 	expectNodeInfo.Generation = 0
 	assert.True(t, equality.Semantic.DeepEqual(expectNodeInfo, nodeInfo))
-	status = pl.AfterPreFilter(context.TODO(), cycleState, &corev1.Pod{})
+}
+
+func TestRestoreReservationWithLazyReservationRestore(t *testing.T) {
+	node := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "test-node",
+		},
+		Status: corev1.NodeStatus{
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("32"),
+				corev1.ResourceMemory: resource.MustParse("64Gi"),
+			},
+		},
+	}
+	// normal pods allocated 12C24Gi and ports 8080/9090
+	pods := []*corev1.Pod{
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default",
+				Name:      "pod-1",
+				UID:       uuid.NewUUID(),
+			},
+			Spec: corev1.PodSpec{
+				NodeName: node.Name,
+				Affinity: &corev1.Affinity{
+					PodAntiAffinity: &corev1.PodAntiAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+							{
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"app": "test-app-1",
+									},
+								},
+								TopologyKey: corev1.LabelHostname,
+							},
+						},
+					},
+				},
+				Containers: []corev1.Container{
+					{
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("4"),
+								corev1.ResourceMemory: resource.MustParse("8Gi"),
+							},
+						},
+						Ports: []corev1.ContainerPort{
+							{
+								HostIP:   "0.0.0.0",
+								Protocol: corev1.ProtocolTCP,
+								HostPort: 8080,
+							},
+						},
+					},
+				},
+			},
+		},
+		{
+			ObjectMeta: metav1.ObjectMeta{
+				Namespace: "default",
+				Name:      "pod-2",
+				UID:       uuid.NewUUID(),
+			},
+			Spec: corev1.PodSpec{
+				NodeName: node.Name,
+				Affinity: &corev1.Affinity{
+					PodAntiAffinity: &corev1.PodAntiAffinity{
+						RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+							{
+								LabelSelector: &metav1.LabelSelector{
+									MatchLabels: map[string]string{
+										"app": "test-app-2",
+									},
+								},
+								TopologyKey: corev1.LabelHostname,
+							},
+						},
+					},
+				},
+				Containers: []corev1.Container{
+					{
+						Resources: corev1.ResourceRequirements{
+							Requests: corev1.ResourceList{
+								corev1.ResourceCPU:    resource.MustParse("8"),
+								corev1.ResourceMemory: resource.MustParse("16Gi"),
+							},
+						},
+						Ports: []corev1.ContainerPort{
+							{
+								HostIP:   "0.0.0.0",
+								Protocol: corev1.ProtocolTCP,
+								HostPort: 9090,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// unmatched reservation allocated 12C24Gi, but assigned Pod with 4C8Gi, remaining 8C16Gi
+	unmatchedReservation := &schedulingv1alpha1.Reservation{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:  uuid.NewUUID(),
+			Name: "reservation12C24G",
+		},
+		Spec: schedulingv1alpha1.ReservationSpec{
+			AllocateOnce: pointer.Bool(false),
+			Template: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{
+									LabelSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{
+											"app": "test-app-2",
+										},
+									},
+									TopologyKey: corev1.LabelHostname,
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    *resource.NewQuantity(12, resource.DecimalSI),
+									corev1.ResourceMemory: resource.MustParse("24Gi"),
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									HostIP:   "0.0.0.0",
+									Protocol: corev1.ProtocolTCP,
+									HostPort: 8080,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Status: schedulingv1alpha1.ReservationStatus{
+			Phase:    schedulingv1alpha1.ReservationAvailable,
+			NodeName: "test-node",
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    *resource.NewQuantity(12, resource.DecimalSI),
+				corev1.ResourceMemory: resource.MustParse("24Gi"),
+			},
+		},
+	}
+	pods = append(pods, reservationutil.NewReservePod(unmatchedReservation))
+
+	// matchedReservation allocated 8C16Gi
+	matchedReservation := &schedulingv1alpha1.Reservation{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:  uuid.NewUUID(),
+			Name: "reservation8C16G",
+		},
+		Spec: schedulingv1alpha1.ReservationSpec{
+			Owners: []schedulingv1alpha1.ReservationOwner{
+				{
+					LabelSelector: &metav1.LabelSelector{
+						MatchLabels: map[string]string{
+							"test-reservation": "true",
+						},
+					},
+				},
+			},
+			Template: &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{
+					Affinity: &corev1.Affinity{
+						PodAntiAffinity: &corev1.PodAntiAffinity{
+							RequiredDuringSchedulingIgnoredDuringExecution: []corev1.PodAffinityTerm{
+								{
+									LabelSelector: &metav1.LabelSelector{
+										MatchLabels: map[string]string{
+											"app": "test-app-3",
+										},
+									},
+									TopologyKey: corev1.LabelHostname,
+								},
+							},
+						},
+					},
+					Containers: []corev1.Container{
+						{
+							Resources: corev1.ResourceRequirements{
+								Requests: corev1.ResourceList{
+									corev1.ResourceCPU:    resource.MustParse("8"),
+									corev1.ResourceMemory: resource.MustParse("16Gi"),
+								},
+							},
+							Ports: []corev1.ContainerPort{
+								{
+									HostIP:   "0.0.0.0",
+									Protocol: corev1.ProtocolTCP,
+									HostPort: 7070,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		Status: schedulingv1alpha1.ReservationStatus{
+			Phase:    schedulingv1alpha1.ReservationAvailable,
+			NodeName: "test-node",
+			Allocatable: corev1.ResourceList{
+				corev1.ResourceCPU:    resource.MustParse("8"),
+				corev1.ResourceMemory: resource.MustParse("16Gi"),
+			},
+		},
+	}
+	pods = append(pods, reservationutil.NewReservePod(matchedReservation))
+
+	podAllocatedWithUnmatchedReservation := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			UID:       uuid.NewUUID(),
+			Name:      "unmatched-allocated-pod-1",
+			Namespace: "default",
+		},
+		Spec: corev1.PodSpec{
+			NodeName: node.Name,
+			Containers: []corev1.Container{
+				{
+					Resources: corev1.ResourceRequirements{
+						Requests: corev1.ResourceList{
+							corev1.ResourceCPU:    resource.MustParse("4"),
+							corev1.ResourceMemory: resource.MustParse("8Gi"),
+						},
+					},
+				},
+			},
+		},
+	}
+	pods = append(pods, podAllocatedWithUnmatchedReservation)
+
+	suit := newPluginTestSuitWith(t, pods, []*corev1.Node{node})
+	p, err := suit.pluginFactory()
+	assert.NoError(t, err)
+	pl := p.(*Plugin)
+	pl.enableLazyReservationRestore = true
+
+	nodeInfo, err := suit.fw.SnapshotSharedLister().NodeInfos().Get(node.Name)
+	assert.NoError(t, err)
+	expectedRequestedResources := &framework.Resource{
+		MilliCPU: 36000,
+		Memory:   72 * 1024 * 1024 * 1024,
+	}
+	assert.Equal(t, expectedRequestedResources, nodeInfo.Requested)
+
+	pl.reservationCache.updateReservation(unmatchedReservation)
+	pl.reservationCache.updateReservation(matchedReservation)
+
+	pl.reservationCache.addPod(unmatchedReservation.UID, podAllocatedWithUnmatchedReservation)
+
+	matchRInfo := pl.reservationCache.getReservationInfoByUID(matchedReservation.UID)
+	unmatchedRInfo := pl.reservationCache.getReservationInfoByUID(unmatchedReservation.UID)
+
+	cycleState := framework.NewCycleState()
+	_, restored, status := pl.BeforePreFilter(context.TODO(), cycleState, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"test-reservation": "true",
+			},
+		},
+	})
+	assert.True(t, restored)
 	assert.True(t, status.IsSuccess())
+
+	status = pl.AfterPreFilter(context.TODO(), cycleState, &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"test-reservation": "true",
+			},
+		},
+	}, &framework.PreFilterResult{})
+	assert.True(t, status.IsSuccess())
+
+	expectedStat := &stateData{
+		schedulingStateData: schedulingStateData{
+			podRequests:          corev1.ResourceList{},
+			podRequestsResources: framework.NewResource(nil),
+			preemptible:          map[string]corev1.ResourceList{},
+			preemptibleInRRs:     map[string]map[types.UID]corev1.ResourceList{},
+			nodeReservationStates: map[string]*nodeReservationState{
+				node.Name: {
+					nodeName:         node.Name,
+					matchedOrIgnored: []*frameworkext.ReservationInfo{matchRInfo},
+					unmatched:        []*frameworkext.ReservationInfo{unmatchedRInfo},
+					podRequested: &framework.Resource{
+						MilliCPU: 32000,
+						Memory:   68719476736,
+					},
+					rAllocated:    framework.NewResource(nil),
+					preRestored:   true,
+					finalRestored: true,
+				},
+			},
+			nodeReservationDiagnosis: map[string]*nodeDiagnosisState{
+				node.Name: {
+					nodeName:                 node.Name,
+					ownerMatched:             1,
+					affinityUnmatched:        0,
+					isUnschedulableUnmatched: 0,
+					taintsUnmatchedReasons:   map[string]int{},
+				},
+			},
+		},
+	}
+	assert.Equal(t, expectedStat, getStateData(cycleState))
+
+	unmatchedReservePod := pods[2].DeepCopy()
+	unmatchedReservePod.Spec.Containers[0].Resources.Requests = corev1.ResourceList{
+		corev1.ResourceCPU:    resource.MustParse("12"),
+		corev1.ResourceMemory: resource.MustParse("24Gi"),
+	}
+	expectNodeInfo := framework.NewNodeInfo(pods[0], pods[1], unmatchedReservePod, podAllocatedWithUnmatchedReservation)
+	expectNodeInfo.SetNode(node)
+	expectNodeInfo.Requested.MilliCPU -= 4000
+	expectNodeInfo.Requested.Memory -= 8 * 1024 * 1024 * 1024
+	expectNodeInfo.NonZeroRequested.MilliCPU -= 4000
+	expectNodeInfo.NonZeroRequested.Memory -= 8 * 1024 * 1024 * 1024
+	assert.Equal(t, expectNodeInfo.Requested, nodeInfo.Requested)
+	assert.Equal(t, expectNodeInfo.UsedPorts, nodeInfo.UsedPorts)
+	nodeInfo.Generation = 0
+	expectNodeInfo.Generation = 0
+	assert.True(t, equality.Semantic.DeepEqual(expectNodeInfo, nodeInfo))
 }
 
 func Test_matchReservation(t *testing.T) {
@@ -585,6 +929,20 @@ func TestBeforePreFilterWithReservationAffinity(t *testing.T) {
 			},
 			wantRestored: false,
 		},
+		{
+			name: "pod specifies a reservation name and matched",
+			rAffinity: &apiext.ReservationAffinity{
+				Name: "reservation8C16G",
+			},
+			wantRestored: true,
+		},
+		{
+			name: "pod specifies a reservation name but failed to match",
+			rAffinity: &apiext.ReservationAffinity{
+				Name: "not-reservation8C16G",
+			},
+			wantRestored: false,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -669,19 +1027,29 @@ func TestBeforePreFilterWithNodeAffinity(t *testing.T) {
 	}
 	var pods []*corev1.Pod
 	pods = append(pods, reservationutil.NewReservePod(matchedReservation))
+	testPod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				"test-reservation": "true",
+			},
+		},
+	}
 
 	tests := []struct {
 		name         string
+		pod          *corev1.Pod
 		nodeAffinity *corev1.NodeAffinity
 		wantRestored bool
 	}{
 		{
 			name:         "pod has no affinity",
+			pod:          testPod.DeepCopy(),
 			nodeAffinity: nil,
 			wantRestored: true,
 		},
 		{
 			name: "pod has affinity with matchField",
+			pod:  testPod.DeepCopy(),
 			nodeAffinity: &corev1.NodeAffinity{
 				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 					NodeSelectorTerms: []corev1.NodeSelectorTerm{
@@ -701,6 +1069,7 @@ func TestBeforePreFilterWithNodeAffinity(t *testing.T) {
 		},
 		{
 			name: "pod has affinity with matchField but failed to match",
+			pod:  testPod.DeepCopy(),
 			nodeAffinity: &corev1.NodeAffinity{
 				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 					NodeSelectorTerms: []corev1.NodeSelectorTerm{
@@ -720,6 +1089,7 @@ func TestBeforePreFilterWithNodeAffinity(t *testing.T) {
 		},
 		{
 			name: "pod has affinity with matchExpressions",
+			pod:  testPod.DeepCopy(),
 			nodeAffinity: &corev1.NodeAffinity{
 				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 					NodeSelectorTerms: []corev1.NodeSelectorTerm{
@@ -739,6 +1109,7 @@ func TestBeforePreFilterWithNodeAffinity(t *testing.T) {
 		},
 		{
 			name: "pod has affinity with matchExpressions but failed to match",
+			pod:  testPod.DeepCopy(),
 			nodeAffinity: &corev1.NodeAffinity{
 				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
 					NodeSelectorTerms: []corev1.NodeSelectorTerm{
@@ -756,6 +1127,33 @@ func TestBeforePreFilterWithNodeAffinity(t *testing.T) {
 			},
 			wantRestored: false,
 		},
+		{
+			name: "pod has affinity and set reservation ignored",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						"test-reservation":             "true",
+						apiext.LabelReservationIgnored: "true",
+					},
+				},
+			},
+			nodeAffinity: &corev1.NodeAffinity{
+				RequiredDuringSchedulingIgnoredDuringExecution: &corev1.NodeSelector{
+					NodeSelectorTerms: []corev1.NodeSelectorTerm{
+						{
+							MatchExpressions: []corev1.NodeSelectorRequirement{
+								{
+									Key:      "test",
+									Operator: corev1.NodeSelectorOpIn,
+									Values:   []string{"true"},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantRestored: true,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -765,19 +1163,10 @@ func TestBeforePreFilterWithNodeAffinity(t *testing.T) {
 			pl := p.(*Plugin)
 
 			pl.reservationCache.updateReservation(matchedReservation)
-
-			testPod := &corev1.Pod{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{
-						"test-reservation": "true",
-					},
-				},
-				Spec: corev1.PodSpec{
-					Affinity: &corev1.Affinity{
-						NodeAffinity: tt.nodeAffinity,
-					},
-				},
+			testPod.Spec.Affinity = &corev1.Affinity{
+				NodeAffinity: tt.nodeAffinity,
 			}
+
 			cycleState := framework.NewCycleState()
 			_, restored, status := pl.BeforePreFilter(context.TODO(), cycleState, testPod)
 			assert.Equal(t, tt.wantRestored, restored)

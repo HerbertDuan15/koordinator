@@ -33,6 +33,7 @@ type CgroupReader interface {
 	ReadCPUSet(parentDir string) (*cpuset.CPUSet, error)
 	ReadCPUAcctUsage(parentDir string) (uint64, error)
 	ReadCPUStat(parentDir string) (*sysutil.CPUStatRaw, error)
+	ReadMemoryUsage(parentDir string) (uint64, error)
 	ReadMemoryLimit(parentDir string) (int64, error)
 	ReadMemoryStat(parentDir string) (*sysutil.MemoryStatRaw, error)
 	ReadMemoryNumaStat(parentDir string) ([]sysutil.NumaMemoryPages, error)
@@ -40,7 +41,7 @@ type CgroupReader interface {
 	ReadCPUProcs(parentDir string) ([]uint32, error)
 	ReadPSI(parentDir string) (*sysutil.PSIByResource, error)
 	ReadMemoryColdPageUsage(parentDir string) (uint64, error)
-	ReadNetClsId(parentDir string) (uint64, error)
+	ReadNetClsId(parentDir string) (uint32, error)
 }
 
 var _ CgroupReader = &CgroupV1Reader{}
@@ -111,6 +112,14 @@ func (r *CgroupV1Reader) ReadCPUStat(parentDir string) (*sysutil.CPUStatRaw, err
 		return nil, fmt.Errorf("cannot parse cgroup value %s, err: %v", s, err)
 	}
 	return v, nil
+}
+
+func (r *CgroupV1Reader) ReadMemoryUsage(parentDir string) (uint64, error) {
+	resource, ok := sysutil.DefaultRegistry.Get(sysutil.CgroupVersionV1, sysutil.MemoryUsageName)
+	if !ok {
+		return 0, ErrResourceNotRegistered
+	}
+	return readCgroupAndParseUint64(parentDir, resource)
 }
 
 func (r *CgroupV1Reader) ReadMemoryLimit(parentDir string) (int64, error) {
@@ -231,12 +240,12 @@ func (r *CgroupV1Reader) ReadPSI(parentDir string) (*sysutil.PSIByResource, erro
 	return psi, nil
 }
 
-func (r *CgroupV1Reader) ReadNetClsId(parentDir string) (uint64, error) {
+func (r *CgroupV1Reader) ReadNetClsId(parentDir string) (uint32, error) {
 	resource, ok := sysutil.DefaultRegistry.Get(sysutil.CgroupVersionV1, sysutil.NetClsClassIdName)
 	if !ok {
 		return 0, ErrResourceNotRegistered
 	}
-	return readCgroupAndParseUint64(parentDir, resource)
+	return readCgroupAndParseUint32(parentDir, resource)
 }
 
 var _ CgroupReader = &CgroupV2Reader{}
@@ -348,6 +357,14 @@ func (r *CgroupV2Reader) ReadCPUStat(parentDir string) (*sysutil.CPUStatRaw, err
 	return v, nil
 }
 
+func (r *CgroupV2Reader) ReadMemoryUsage(parentDir string) (uint64, error) {
+	resource, ok := sysutil.DefaultRegistry.Get(sysutil.CgroupVersionV2, sysutil.MemoryUsageName)
+	if !ok {
+		return 0, ErrResourceNotRegistered
+	}
+	return readCgroupAndParseUint64(parentDir, resource)
+}
+
 func (r *CgroupV2Reader) ReadMemoryLimit(parentDir string) (int64, error) {
 	resource, ok := sysutil.DefaultRegistry.Get(sysutil.CgroupVersionV2, sysutil.MemoryLimitName)
 	if !ok {
@@ -445,12 +462,12 @@ func (r *CgroupV2Reader) ReadPSI(parentDir string) (*sysutil.PSIByResource, erro
 	return psi, nil
 }
 
-func (r *CgroupV2Reader) ReadNetClsId(parentDir string) (uint64, error) {
+func (r *CgroupV2Reader) ReadNetClsId(parentDir string) (uint32, error) {
 	resource, ok := sysutil.DefaultRegistry.Get(sysutil.CgroupVersionV2, sysutil.NetClsClassIdName)
 	if !ok {
 		return 0, ErrResourceNotRegistered
 	}
-	return readCgroupAndParseUint64(parentDir, resource)
+	return readCgroupAndParseUint32(parentDir, resource)
 }
 
 func NewCgroupReader() CgroupReader {

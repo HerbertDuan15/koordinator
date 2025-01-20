@@ -19,6 +19,7 @@ package deviceshare
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/klog/v2"
@@ -33,6 +34,7 @@ import (
 const reservationRestoreStateKey = Name + "/reservationRestoreState"
 
 type reservationRestoreStateData struct {
+	lock        sync.RWMutex
 	skip        bool
 	nodeToState frameworkext.NodeReservationRestoreStates
 }
@@ -59,9 +61,10 @@ func getReservationRestoreState(cycleState *framework.CycleState) *reservationRe
 	if err == nil {
 		state, _ = value.(*reservationRestoreStateData)
 	}
-	if state == nil {
+	if state == nil || state.nodeToState == nil {
 		state = &reservationRestoreStateData{
-			skip: true,
+			skip:        true,
+			nodeToState: map[string]interface{}{},
 		}
 	}
 	return state
@@ -72,16 +75,26 @@ func cleanReservationRestoreState(cycleState *framework.CycleState) {
 }
 
 func (s *reservationRestoreStateData) Clone() framework.StateData {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 	return s
 }
 
 func (s *reservationRestoreStateData) getNodeState(nodeName string) *nodeReservationRestoreStateData {
+	s.lock.RLock()
+	defer s.lock.RUnlock()
 	val := s.nodeToState[nodeName]
 	ns, ok := val.(*nodeReservationRestoreStateData)
 	if !ok {
 		ns = &nodeReservationRestoreStateData{}
 	}
 	return ns
+}
+
+func (s *reservationRestoreStateData) setNodeState(nodeName string, nodeState interface{}) {
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	s.nodeToState[nodeName] = nodeState
 }
 
 func (rs *nodeReservationRestoreStateData) mergeReservationAllocations() {
@@ -115,7 +128,9 @@ func (p *Plugin) PreRestoreReservation(ctx context.Context, cycleState *framewor
 	if err != nil {
 		return framework.NewStatus(framework.UnschedulableAndUnresolvable, err.Error())
 	}
-	cycleState.Write(reservationRestoreStateKey, &reservationRestoreStateData{skip: len(requests) == 0})
+	state := getReservationRestoreState(cycleState)
+	state.skip = len(requests) == 0
+	cycleState.Write(reservationRestoreStateKey, state)
 	return nil
 }
 
@@ -131,13 +146,14 @@ func (p *Plugin) RestoreReservation(ctx context.Context, cycleState *framework.C
 		return nil, nil
 	}
 
-	nd.lock.RLock()
-	defer nd.lock.RUnlock()
-
 	filterFn := func(reservations []*frameworkext.ReservationInfo) []reservationAlloc {
 		if len(reservations) == 0 {
 			return nil
 		}
+
+		nd.lock.RLock()
+		defer nd.lock.RUnlock()
+
 		result := make([]reservationAlloc, 0, len(reservations))
 		for _, rInfo := range reservations {
 			reservePod := rInfo.GetReservePod()
@@ -171,9 +187,15 @@ func (p *Plugin) RestoreReservation(ctx context.Context, cycleState *framework.C
 		unmatched: filteredUnmatched,
 	}
 	s.mergeReservationAllocations()
+
+	// also complete the nodeRestoreState in cycleState
+	state.setNodeState(nodeName, s)
+	cycleState.Write(reservationRestoreStateKey, state)
+
 	return s, nil
 }
 
+// DEPRECATED
 func (p *Plugin) FinalRestoreReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, nodeToStates frameworkext.NodeReservationRestoreStates) *framework.Status {
 	state := getReservationRestoreState(cycleState)
 	if state.skip {
@@ -188,12 +210,17 @@ func (p *Plugin) tryAllocateFromReservation(
 	state *preFilterState,
 	restoreState *nodeReservationRestoreStateData,
 	matchedReservations []reservationAlloc,
+	pod *corev1.Pod,
 	node *corev1.Node,
 	basicPreemptible map[schedulingv1alpha1.DeviceType]deviceResources,
 	requiredFromReservation bool,
 ) (apiext.DeviceAllocations, *framework.Status) {
 	if len(matchedReservations) == 0 {
 		return nil, nil
+	}
+
+	if apiext.IsReservationIgnored(pod) {
+		return p.tryAllocateIgnoreReservation(allocator, state, restoreState, restoreState.matched, node, basicPreemptible, false)
 	}
 
 	var hasSatisfiedReservation bool
@@ -220,36 +247,67 @@ func (p *Plugin) tryAllocateFromReservation(
 		preemptible := appendAllocated(nil, basicPreemptible, alloc.remained, preemptibleInRR)
 
 		allocatePolicy := rInfo.GetAllocatePolicy()
+		// TODO: Currently the ReservationAllocatePolicyDefault is actually implemented as
+		//       ReservationAllocatePolicyAligned. Need to re-visit the policies.
 		if allocatePolicy == schedulingv1alpha1.ReservationAllocatePolicyDefault ||
 			allocatePolicy == schedulingv1alpha1.ReservationAllocatePolicyAligned {
 			result, status = allocator.Allocate(nil, preferred, nil, preemptible)
-			if status.IsSuccess() {
-				hasSatisfiedReservation = true
-				break
+			if !status.IsSuccess() {
+				reservationReasons = append(reservationReasons, status)
+				continue
 			}
-			reservationReasons = append(reservationReasons, status)
+
+			hasSatisfiedReservation = true
+			break
+
 		} else if allocatePolicy == schedulingv1alpha1.ReservationAllocatePolicyRestricted {
-			_, status := allocator.Allocate(preferred, preferred, nil, preemptible)
-			if status.IsSuccess() {
-				//
-				// It is necessary to check separately whether the remaining resources of the device instance
-				// reserved by the Restricted Reservation meet the requirements of the Pod, to ensure that
-				// the intersecting resources do not exceed the reserved range of the Restricted Reservation.
-				//
-				requiredDeviceResources := calcRequiredDeviceResources(&alloc, preemptibleInRR)
-				result, status = allocator.Allocate(preferred, preferred, requiredDeviceResources, preemptible)
-				if status.IsSuccess() {
-					hasSatisfiedReservation = true
-					break
-				}
+			//
+			// It is necessary to check separately whether the remaining resources of the device instance
+			// reserved by the Restricted Reservation meet the requirements of the Pod, to ensure that
+			// the intersecting resources do not exceed the reserved range of the Restricted Reservation.
+			//
+			// Example: the node has reservation-ignored pod, matched reservations R1, R2, ..., Ri,
+			// unmatched reservations U1, U2, ..., Uj, and pods P1, P2, ..., Pk.
+			// The free device resources for the scheduling pod P0 is:
+			// min(NodeTotal - P1 - P2 - ... - Pk - U1 - U2 - ... - Uj, R1)
+			requiredDeviceResources := calcRequiredDeviceResources(&alloc, preemptibleInRR)
+			result, status = allocator.Allocate(preferred, preferred, requiredDeviceResources, preemptible)
+			if !status.IsSuccess() {
+				reservationReasons = append(reservationReasons, status)
+				continue
 			}
-			reservationReasons = append(reservationReasons, status)
+
+			hasSatisfiedReservation = true
+			break
 		}
 	}
 	if !hasSatisfiedReservation && requiredFromReservation {
 		return nil, framework.NewStatus(framework.Unschedulable, p.makeReasonsByReservation(reservationReasons)...)
 	}
 	return result, nil
+}
+
+// tryAllocateIgnoreReservation will try to allocate where the reserved resources of the node ignored.
+func (p *Plugin) tryAllocateIgnoreReservation(
+	allocator *AutopilotAllocator,
+	state *preFilterState,
+	restoreState *nodeReservationRestoreStateData,
+	ignoredReservations []reservationAlloc,
+	node *corev1.Node,
+	basicPreemptible map[schedulingv1alpha1.DeviceType]deviceResources,
+	requiredFromReservation bool,
+) (apiext.DeviceAllocations, *framework.Status) {
+	preemptibleFromIgnored := map[schedulingv1alpha1.DeviceType]deviceResources{}
+
+	// accumulate all ignored reserved resources which are not allocated to any owner pods
+	for _, alloc := range ignoredReservations {
+		preemptibleFromIgnored = appendAllocated(preemptibleFromIgnored,
+			state.preemptibleInRRs[node.Name][alloc.rInfo.UID()], alloc.remained)
+	}
+
+	preemptibleFromIgnored = appendAllocated(preemptibleFromIgnored, basicPreemptible, restoreState.mergedMatchedAllocated)
+
+	return allocator.Allocate(nil, nil, nil, preemptibleFromIgnored)
 }
 
 func (p *Plugin) makeReasonsByReservation(reservationReasons []*framework.Status) []string {
@@ -321,6 +379,12 @@ func (p *Plugin) allocateWithNominatedReservation(
 		return nil, nil
 	}
 
+	// if the pod is reservation-ignored, it should allocate the node unallocated resources and all the reserved
+	// unallocated resources.
+	if apiext.IsReservationIgnored(pod) {
+		return p.tryAllocateIgnoreReservation(allocator, state, restoreState, restoreState.matched, node, basicPreemptible, false)
+	}
+
 	reservation := p.handle.GetReservationNominator().GetNominatedReservation(pod, node.Name)
 	if reservation == nil {
 		return nil, nil
@@ -342,6 +406,7 @@ func (p *Plugin) allocateWithNominatedReservation(
 		state,
 		restoreState,
 		restoreState.matched[allocIndex:allocIndex+1],
+		pod,
 		node,
 		basicPreemptible,
 		false,

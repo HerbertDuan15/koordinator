@@ -22,6 +22,7 @@ import (
 	"github.com/koordinator-sh/koordinator/pkg/slo-controller/noderesource/plugins/cpunormalization"
 	"github.com/koordinator-sh/koordinator/pkg/slo-controller/noderesource/plugins/gpudeviceresource"
 	"github.com/koordinator-sh/koordinator/pkg/slo-controller/noderesource/plugins/midresource"
+	rdmadeviceresource "github.com/koordinator-sh/koordinator/pkg/slo-controller/noderesource/plugins/rdmadevicereource"
 	"github.com/koordinator-sh/koordinator/pkg/slo-controller/noderesource/plugins/resourceamplification"
 )
 
@@ -34,6 +35,7 @@ func init() {
 	addPluginOption(&cpunormalization.Plugin{}, true)
 	addPluginOption(&resourceamplification.Plugin{}, true)
 	addPluginOption(&gpudeviceresource.Plugin{}, true)
+	addPluginOption(&rdmadeviceresource.Plugin{}, true)
 }
 
 func addPlugins(filter framework.FilterFn) {
@@ -50,8 +52,10 @@ var (
 	// SetupPlugins implement the setup for node resource plugin.
 	setupPlugins = []framework.SetupPlugin{
 		&cpunormalization.Plugin{},
+		&resourceamplification.Plugin{},
 		&batchresource.Plugin{},
 		&gpudeviceresource.Plugin{},
+		&rdmadeviceresource.Plugin{},
 	}
 	// NodePreUpdatePlugin implements node resource pre-updating.
 	nodePreUpdatePlugins = []framework.NodePreUpdatePlugin{
@@ -64,12 +68,14 @@ var (
 		&midresource.Plugin{},
 		&batchresource.Plugin{},
 		&gpudeviceresource.Plugin{},
+		&rdmadeviceresource.Plugin{},
 	}
 	// NodeSyncPlugin implements the check of resource updating.
 	nodeStatusCheckPlugins = []framework.NodeStatusCheckPlugin{
 		&midresource.Plugin{},
 		&batchresource.Plugin{},
 		&gpudeviceresource.Plugin{},
+		&rdmadeviceresource.Plugin{},
 	}
 	// nodeMetaCheckPlugins implements the check of node meta updating.
 	nodeMetaCheckPlugins = []framework.NodeMetaCheckPlugin{
@@ -84,5 +90,6 @@ var (
 		&midresource.Plugin{},
 		&batchresource.Plugin{},
 		&gpudeviceresource.Plugin{},
+		&rdmadeviceresource.Plugin{},
 	}
 )

@@ -384,7 +384,6 @@ func TestReservationInfoUpdateReservation(t *testing.T) {
 			want: &ReservationInfo{
 				ResourceNames: []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory},
 				Allocatable:   allocatable.DeepCopy(),
-				Allocated:     corev1.ResourceList{},
 				AssignedPods:  map[types.UID]*PodRequirement{},
 				OwnerMatchers: ownerMatchers,
 				ParseError:    parseError,
@@ -407,7 +406,6 @@ func TestReservationInfoUpdateReservation(t *testing.T) {
 			want: &ReservationInfo{
 				ResourceNames: []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory},
 				Allocatable:   allocatable.DeepCopy(),
-				Allocated:     corev1.ResourceList{},
 				AssignedPods:  map[types.UID]*PodRequirement{},
 				OwnerMatchers: func() []reservationutil.ReservationOwnerMatcher {
 					m, _ := reservationutil.ParseReservationOwnerMatchers([]schedulingv1alpha1.ReservationOwner{
@@ -444,7 +442,6 @@ func TestReservationInfoUpdateReservation(t *testing.T) {
 			want: &ReservationInfo{
 				ResourceNames: []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory},
 				Allocatable:   allocatable.DeepCopy(),
-				Allocated:     corev1.ResourceList{},
 				AssignedPods:  map[types.UID]*PodRequirement{},
 				OwnerMatchers: nil,
 				ParseError: func() error {
@@ -481,7 +478,28 @@ func TestReservationInfoUpdateReservation(t *testing.T) {
 					corev1.ResourceCPU:    resource.MustParse("8"),
 					corev1.ResourceMemory: resource.MustParse("16Gi"),
 				},
-				Allocated:     corev1.ResourceList{},
+				AssignedPods:  map[types.UID]*PodRequirement{},
+				OwnerMatchers: ownerMatchers,
+				ParseError:    nil,
+			},
+		},
+		{
+			name:        "reservation's reserved has changed",
+			reservation: reservation,
+			newReservation: func() *schedulingv1alpha1.Reservation {
+				r := reservation.DeepCopy()
+				if r.Annotations == nil {
+					r.Annotations = map[string]string{}
+				}
+				r.Annotations[apiext.AnnotationNodeReservation] = `{"resources": {"cpu": "1"}}`
+				return r
+			}(),
+			want: &ReservationInfo{
+				ResourceNames: []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory},
+				Allocatable:   allocatable.DeepCopy(),
+				Reserved: map[corev1.ResourceName]resource.Quantity{
+					corev1.ResourceCPU: resource.MustParse("1"),
+				},
 				AssignedPods:  map[types.UID]*PodRequirement{},
 				OwnerMatchers: ownerMatchers,
 				ParseError:    nil,

@@ -21,6 +21,8 @@ import (
 	"strings"
 
 	"github.com/containerd/nri/pkg/api"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 
 	apiext "github.com/koordinator-sh/koordinator/apis/extension"
@@ -179,8 +181,18 @@ func (c *ContainerRequest) FromReconciler(podMeta *statesinformer.PodMeta, conta
 }
 
 type ContainerResponse struct {
-	Resources        Resources
-	AddContainerEnvs map[string]string
+	Resources           Resources
+	AddContainerEnvs    map[string]string
+	AddContainerMounts  []*Mount
+	AddContainerDevices []*LinuxDevice
+}
+
+type LinuxDevice struct {
+	Path          string
+	Type          string
+	Major         int64
+	Minor         int64
+	FileModeValue uint32
 }
 
 func (c *ContainerResponse) ProxyDone(resp *runtimeapi.ContainerResourceHookResponse) {
@@ -215,6 +227,10 @@ type ContainerContext struct {
 	Response ContainerResponse
 	executor resourceexecutor.ResourceUpdateExecutor
 	updaters []resourceexecutor.ResourceUpdater
+}
+
+func (c *ContainerContext) RecordEvent(r record.EventRecorder, pod *corev1.Pod) {
+	//TODO: Don't record pod by container level
 }
 
 func (c *ContainerContext) FromNri(pod *api.PodSandbox, container *api.Container) {
@@ -262,10 +278,39 @@ func (c *ContainerContext) NriDone(executor resourceexecutor.ResourceUpdateExecu
 		update.SetLinuxMemoryLimit(*c.Response.Resources.MemoryLimit)
 	}
 
+	if c.Response.Resources.Resctrl != nil {
+		adjust.SetLinuxRDTClass((*(c.Response.Resources.Resctrl)).Closid)
+		update.SetLinuxRDTClass((*(c.Response.Resources.Resctrl)).Closid)
+	}
+
 	if c.Response.AddContainerEnvs != nil {
 		for k, v := range c.Response.AddContainerEnvs {
 			adjust.AddEnv(k, v)
 		}
+	}
+
+	for _, m := range c.Response.AddContainerMounts {
+		adjust.AddMount(&api.Mount{
+			Destination: m.Destination,
+			Type:        m.Type,
+			Source:      m.Source,
+			Options:     m.Options,
+		})
+	}
+
+	if len(c.Response.AddContainerDevices) != 0 {
+		for i := range c.Response.AddContainerDevices {
+			adjust.AddDevice(&api.LinuxDevice{
+				Path:  c.Response.AddContainerDevices[i].Path,
+				Type:  c.Response.AddContainerDevices[i].Type,
+				Major: c.Response.AddContainerDevices[i].Major,
+				Minor: c.Response.AddContainerDevices[i].Minor,
+				FileMode: &api.OptionalFileMode{
+					Value: c.Response.AddContainerDevices[i].FileModeValue,
+				},
+			})
+		}
+
 	}
 
 	c.Update()

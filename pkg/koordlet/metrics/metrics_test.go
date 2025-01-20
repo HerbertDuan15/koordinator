@@ -138,7 +138,9 @@ func TestCommonCollectors(t *testing.T) {
 		RecordCollectNodeLocalStorageInfoStatus(nil)
 		RecordBESuppressCores("cfsQuota", float64(1000))
 		RecordBESuppressLSUsedCPU(1.0)
+		RecordBESuppressBEUsedCPU(1.0)
 		RecordNodeUsedCPU(2.0)
+		RecordNodeUsedMemory(float64(1024))
 		RecordContainerScaledCFSBurstUS(testingPod.Namespace, testingPod.Name, testingContainer.ContainerID, testingContainer.Name, 1000000)
 		RecordContainerScaledCFSQuotaUS(testingPod.Namespace, testingPod.Name, testingContainer.ContainerID, testingContainer.Name, 1000000)
 		RecordPodEviction(testingPod.Namespace, testingPod.Name, "evictByCPU")
@@ -410,5 +412,37 @@ func TestRuntimeHookCollector(t *testing.T) {
 		RecordRuntimeHookInvokedDurationMilliSeconds("testHook", "testStage", testErr, 5.0)
 		RecordRuntimeHookReconcilerInvokedDurationMilliSeconds("pod", "cpu.cfs_quota_us", nil, 10.0)
 		RecordRuntimeHookReconcilerInvokedDurationMilliSeconds("pod", "cpu.cfs_quota_us", testErr, 5.0)
+	})
+}
+
+func TestHostApplicationCollectors(t *testing.T) {
+	type resourceUsage struct {
+		cpu float64
+		mem float64
+	}
+	testingNode := &corev1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "test-node",
+			Labels: map[string]string{},
+		},
+	}
+	testingHostApplication := &slov1alpha1.HostApplicationSpec{
+		Name:     "test-app",
+		QoS:      apiext.QoSBE,
+		Priority: apiext.PriorityBatch,
+	}
+	testingResourceUsage := resourceUsage{
+		cpu: 33740549972770,
+		mem: 7806574592,
+	}
+
+	t.Run("test", func(t *testing.T) {
+		Register(testingNode)
+		defer Register(nil)
+
+		RecordHostApplicationResourceUsage(string(corev1.ResourceCPU), testingHostApplication, testingResourceUsage.cpu)
+		RecordHostApplicationResourceUsage(string(corev1.ResourceMemory), testingHostApplication, testingResourceUsage.mem)
+
+		ResetHostApplicationResourceUsage()
 	})
 }

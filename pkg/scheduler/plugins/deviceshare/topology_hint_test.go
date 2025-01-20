@@ -48,6 +48,10 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 		apiext.ResourceGPUCore:        resource.MustParse("100"),
 		apiext.ResourceGPUMemoryRatio: resource.MustParse("100"),
 	}
+	largeGPURequets := corev1.ResourceList{
+		apiext.ResourceGPUCore:        resource.MustParse("1700"),
+		apiext.ResourceGPUMemoryRatio: resource.MustParse("1700"),
+	}
 	rdmaRequests := corev1.ResourceList{
 		apiext.ResourceRDMA: resource.MustParse("2"),
 	}
@@ -67,27 +71,26 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				schedulingv1alpha1.RDMA: rdmaRequests,
 			},
 			want: map[string][]topologymanager.NUMATopologyHint{
-				string(apiext.ResourceGPUCore): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
+				string(schedulingv1alpha1.GPU): {
+					{NUMANodeAffinity: newBitMask(0), Preferred: true, Score: defaultNUMAScore},
 					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
-				string(apiext.ResourceGPUMemory): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
+				string(schedulingv1alpha1.RDMA): {
+					{NUMANodeAffinity: newBitMask(0), Preferred: true, Score: defaultNUMAScore},
 					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
-				},
-				string(apiext.ResourceGPUMemoryRatio): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
-				},
-				string(apiext.ResourceRDMA): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
 			},
+		},
+		{
+			name: "generate gpu&rdma hints but large gpu requests",
+			podRequests: map[schedulingv1alpha1.DeviceType]corev1.ResourceList{
+				schedulingv1alpha1.GPU:  largeGPURequets,
+				schedulingv1alpha1.RDMA: rdmaRequests,
+			},
+			want:    nil,
+			wantErr: true,
 		},
 		{
 			name: "generate gpu hints with assigned devices",
@@ -106,17 +109,9 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				},
 			},
 			want: map[string][]topologymanager.NUMATopologyHint{
-				string(apiext.ResourceGPUCore): {
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
-				},
-				string(apiext.ResourceGPUMemory): {
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
-				},
-				string(apiext.ResourceGPUMemoryRatio): {
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+				string(schedulingv1alpha1.GPU): {
+					{NUMANodeAffinity: newBitMask(1), Preferred: true, Score: defaultNUMAScore},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
 			},
 		},
@@ -127,7 +122,8 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 					apiext.ResourceFPGA: resource.MustParse("100"),
 				},
 			},
-			want: map[string][]topologymanager.NUMATopologyHint{},
+			want:    nil,
+			wantErr: true,
 		},
 		{
 			name: "generate 2 rdma hints",
@@ -140,10 +136,10 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				},
 			},
 			want: map[string][]topologymanager.NUMATopologyHint{
-				string(apiext.ResourceRDMA): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+				string(schedulingv1alpha1.RDMA): {
+					{NUMANodeAffinity: newBitMask(0), Preferred: true, Score: defaultNUMAScore},
+					{NUMANodeAffinity: newBitMask(1), Preferred: true, Score: defaultNUMAScore},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
 			},
 		},
@@ -159,10 +155,10 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				},
 			},
 			want: map[string][]topologymanager.NUMATopologyHint{
-				string(apiext.ResourceRDMA): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+				string(schedulingv1alpha1.RDMA): {
+					{NUMANodeAffinity: newBitMask(0), Preferred: true, Score: defaultNUMAScore},
+					{NUMANodeAffinity: newBitMask(1), Preferred: true, Score: defaultNUMAScore},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
 			},
 		},
@@ -180,8 +176,8 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				},
 			},
 			want: map[string][]topologymanager.NUMATopologyHint{
-				string(apiext.ResourceRDMA): {
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: true},
+				string(schedulingv1alpha1.RDMA): {
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: true, Score: defaultNUMAScore},
 				},
 			},
 		},
@@ -200,25 +196,15 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				DeviceTypes: []schedulingv1alpha1.DeviceType{schedulingv1alpha1.GPU, schedulingv1alpha1.RDMA},
 			},
 			want: map[string][]topologymanager.NUMATopologyHint{
-				string(apiext.ResourceGPUCore): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
+				string(schedulingv1alpha1.RDMA): {
+					{NUMANodeAffinity: newBitMask(0), Preferred: true, Score: defaultNUMAScore},
 					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
-				string(apiext.ResourceGPUMemory): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
+				string(schedulingv1alpha1.GPU): {
+					{NUMANodeAffinity: newBitMask(0), Preferred: true, Score: defaultNUMAScore},
 					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
-				},
-				string(apiext.ResourceGPUMemoryRatio): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
-				},
-				string(apiext.ResourceRDMA): {
-					{NUMANodeAffinity: newBitMask(0), Preferred: true},
-					{NUMANodeAffinity: newBitMask(1), Preferred: true},
-					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false},
+					{NUMANodeAffinity: newBitMask(0, 1), Preferred: false, Score: defaultNUMAScore},
 				},
 			},
 		},
@@ -260,6 +246,7 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 			hintSelectors, err := newHintSelectors(tt.hints)
 			assert.NoError(t, err)
 
+			pod := &corev1.Pod{}
 			state := &preFilterState{
 				skip:          false,
 				podRequests:   tt.podRequests,
@@ -267,9 +254,9 @@ func TestPlugin_GetPodTopologyHints(t *testing.T) {
 				hintSelectors: hintSelectors,
 				jointAllocate: tt.jointAllocate,
 			}
+			state.gpuRequirements, _ = parseGPURequirements(pod, state.podRequests, state.hints[schedulingv1alpha1.GPU])
 			cycleState := framework.NewCycleState()
 			cycleState.Write(stateKey, state)
-			pod := &corev1.Pod{}
 
 			got, status := pl.GetPodTopologyHints(context.TODO(), cycleState, pod, node.Name)
 			assert.Equal(t, tt.want, got)
@@ -409,6 +396,7 @@ func TestPlugin_Allocate(t *testing.T) {
 			hintSelectors, err := newHintSelectors(tt.hints)
 			assert.NoError(t, err)
 
+			pod := &corev1.Pod{}
 			state := &preFilterState{
 				skip:          false,
 				podRequests:   tt.podRequests,
@@ -416,9 +404,9 @@ func TestPlugin_Allocate(t *testing.T) {
 				hintSelectors: hintSelectors,
 				jointAllocate: tt.jointAllocate,
 			}
+			state.gpuRequirements, _ = parseGPURequirements(pod, tt.podRequests, state.hints[schedulingv1alpha1.GPU])
 			cycleState := framework.NewCycleState()
 			cycleState.Write(stateKey, state)
-			pod := &corev1.Pod{}
 			pl := p.(*Plugin)
 			status := pl.Allocate(context.TODO(), cycleState, tt.affinity, pod, node.Name)
 			if !tt.wantErr != status.IsSuccess() {

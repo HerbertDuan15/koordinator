@@ -34,6 +34,7 @@ import (
 	apiext "github.com/koordinator-sh/koordinator/apis/extension"
 	schedulingv1alpha1 "github.com/koordinator-sh/koordinator/apis/scheduling/v1alpha1"
 	frameworkexthelper "github.com/koordinator-sh/koordinator/pkg/scheduler/frameworkext/helper"
+	"github.com/koordinator-sh/koordinator/pkg/util"
 )
 
 const (
@@ -47,8 +48,14 @@ type nodeDevice struct {
 	deviceUsed    map[schedulingv1alpha1.DeviceType]deviceResources
 	vfAllocations map[schedulingv1alpha1.DeviceType]*VFAllocation
 	allocateSet   map[schedulingv1alpha1.DeviceType]map[types.NamespacedName]deviceResources
-	numaTopology  *NUMATopology
 	deviceInfos   map[schedulingv1alpha1.DeviceType][]*schedulingv1alpha1.DeviceInfo
+
+	numaTopology               *NUMATopology
+	secondaryDeviceWellPlanned bool
+
+	nodeHonorGPUPartition bool
+	gpuPartitionIndexer   GPUPartitionIndexer
+	gpuTopologyScope      *GPUTopologyScope
 }
 
 type VFAllocation struct {
@@ -311,7 +318,7 @@ func getVFAllocations(allocations []*apiext.DeviceAllocation) *VFAllocation {
 	return vfAllocation
 }
 
-func (n *nodeDevice) calcFreeWithPreemptible(deviceType schedulingv1alpha1.DeviceType, preemptible deviceResources) deviceResources {
+func (n *nodeDevice) calcFreeWithPreemptible(deviceType schedulingv1alpha1.DeviceType, preemptible, requiredDeviceResources deviceResources) deviceResources {
 	deviceFree := n.deviceFree[deviceType]
 	deviceUsed := n.deviceUsed[deviceType]
 	deviceTotal := n.deviceTotal[deviceType]
@@ -338,6 +345,20 @@ func (n *nodeDevice) calcFreeWithPreemptible(deviceType schedulingv1alpha1.Devic
 		}
 		deviceFree = mergedFreeDevices
 	}
+
+	// If allocating from a required resources, e.g. a reservation, the free should be no larger than the reserved free.
+	if len(requiredDeviceResources) > 0 {
+		for minor, v := range deviceFree {
+			required, ok := requiredDeviceResources[minor]
+			if !ok {
+				delete(deviceFree, minor)
+				continue
+			}
+			v = util.MinResourceList(v, required)
+			deviceFree[minor] = v
+		}
+	}
+
 	return deviceFree
 }
 
@@ -349,13 +370,7 @@ func (n *nodeDevice) filter(
 	total := map[schedulingv1alpha1.DeviceType]deviceResources{}
 	used := map[schedulingv1alpha1.DeviceType]deviceResources{}
 	for deviceType, deviceMinors := range devices {
-		var freeDevices deviceResources
-		requiredResources := requiredDeviceResources[deviceType]
-		if len(requiredResources) > 0 {
-			freeDevices = requiredResources
-		} else {
-			freeDevices = n.calcFreeWithPreemptible(deviceType, preemptibleDeviceResources[deviceType])
-		}
+		freeDevices := n.calcFreeWithPreemptible(deviceType, preemptibleDeviceResources[deviceType], requiredDeviceResources[deviceType])
 
 		if freeDevices.isZero() {
 			continue
@@ -391,6 +406,10 @@ func (n *nodeDevice) filter(
 	r.vfAllocations = n.vfAllocations
 	r.numaTopology = n.numaTopology
 	r.deviceInfos = n.deviceInfos
+	r.gpuPartitionIndexer = n.gpuPartitionIndexer
+	r.nodeHonorGPUPartition = n.nodeHonorGPUPartition
+	r.secondaryDeviceWellPlanned = n.secondaryDeviceWellPlanned
+	r.gpuTopologyScope = n.gpuTopologyScope
 	return r
 }
 
@@ -498,12 +517,22 @@ func (n *nodeDeviceCache) updateNodeDevice(nodeName string, device *schedulingv1
 		info := &device.Spec.Devices[i]
 		deviceInfos[info.Type] = append(deviceInfos[info.Type], info)
 	}
+	gpuPartitionTable, err := apiext.GetGPUPartitionTable(device)
+	if err != nil {
+		klog.Errorf("invalid gpu partition table, err: %s", err.Error())
+	}
+	gpuPartitionIndexer := GetGPUPartitionIndexer(gpuPartitionTable)
+	gpuTopologyScope := GetGPUTopologyScope(deviceInfos[schedulingv1alpha1.GPU], nodeDeviceResource[schedulingv1alpha1.GPU])
 	info := n.getNodeDevice(nodeName, true)
 	info.lock.Lock()
 	defer info.lock.Unlock()
 	info.resetDeviceTotal(nodeDeviceResource)
 	info.numaTopology = numaTopology
 	info.deviceInfos = deviceInfos
+	info.gpuPartitionIndexer = gpuPartitionIndexer
+	info.nodeHonorGPUPartition = apiext.GetGPUPartitionPolicy(device) == apiext.GPUPartitionPolicyHonor
+	info.secondaryDeviceWellPlanned = apiext.IsSecondaryDeviceWellPlanned(device)
+	info.gpuTopologyScope = gpuTopologyScope
 }
 
 func buildDeviceResources(device *schedulingv1alpha1.Device) map[schedulingv1alpha1.DeviceType]deviceResources {

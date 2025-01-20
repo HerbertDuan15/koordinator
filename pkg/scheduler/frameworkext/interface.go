@@ -60,9 +60,12 @@ type FrameworkExtender interface {
 
 	RunReservationExtensionPreRestoreReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod) *framework.Status
 	RunReservationExtensionRestoreReservation(ctx context.Context, cycleState *framework.CycleState, podToSchedule *corev1.Pod, matched []*ReservationInfo, unmatched []*ReservationInfo, nodeInfo *framework.NodeInfo) (PluginToReservationRestoreStates, *framework.Status)
+	// RunReservationExtensionFinalRestoreReservation is deprecated, and will be removed next version.
+	// DEPRECATED: use RunReservationExtensionRestoreReservation instead.
 	RunReservationExtensionFinalRestoreReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, states PluginToNodeReservationRestoreStates) *framework.Status
 
-	RunReservationFilterPlugins(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfo *ReservationInfo, nodeName string) *framework.Status
+	RunReservationFilterPlugins(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfo *ReservationInfo, nodeInfo *framework.NodeInfo) *framework.Status
+	RunNominateReservationFilterPlugins(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfo *ReservationInfo, nodeName string) *framework.Status
 	RunReservationScorePlugins(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfos []*ReservationInfo, nodeName string) (PluginToReservationScores, *framework.Status)
 
 	RunNUMATopologyManagerAdmit(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, nodeName string, numaNodes []int, policyType apiext.NUMATopologyPolicy, exclusivePolicy apiext.NumaTopologyExclusive, allNUMANodeStatus []apiext.NumaNodeStatus) *framework.Status
@@ -82,7 +85,7 @@ type PreFilterTransformer interface {
 	BeforePreFilter(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod) (*corev1.Pod, bool, *framework.Status)
 	// AfterPreFilter is executed after PreFilter.
 	// There is a chance to trigger the correction of the State data of each plugin after the PreFilter.
-	AfterPreFilter(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod) *framework.Status
+	AfterPreFilter(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, preFilterResult *framework.PreFilterResult) *framework.Status
 }
 
 // FilterTransformer is executed before Filter.
@@ -103,7 +106,7 @@ type PluginToReservationRestoreStates map[string]interface{}
 // PluginToNodeReservationRestoreStates declares a map from plugin name to its NodeReservationRestoreStates.
 type PluginToNodeReservationRestoreStates map[string]NodeReservationRestoreStates
 
-// NodeReservationRestoreStates declares a map from plugin name to its ReservationRestoreState.
+// NodeReservationRestoreStates declares a map from node name to its ReservationRestoreState.
 type NodeReservationRestoreStates map[string]interface{}
 
 // ReservationRestorePlugin is used to support the return of fine-grained resources
@@ -113,14 +116,19 @@ type ReservationRestorePlugin interface {
 	framework.Plugin
 	PreRestoreReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod) *framework.Status
 	RestoreReservation(ctx context.Context, cycleState *framework.CycleState, podToSchedule *corev1.Pod, matched []*ReservationInfo, unmatched []*ReservationInfo, nodeInfo *framework.NodeInfo) (interface{}, *framework.Status)
+	// DEPRECATED
 	FinalRestoreReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, states NodeReservationRestoreStates) *framework.Status
 }
 
 // ReservationFilterPlugin is an interface for Filter Reservation plugins.
-// These plugins will be called during the Reserve phase to determine whether the Reservation can participate in the Reserve
+// FilterReservation will be called in the Filter phase for determining which reservations are available.
+// FilterNominateReservation will be called in the PreScore or the Reserve phase to nominate a reservation whether it
+// can participate the Reserve.
+// TODO: Looking forward a merged method.
 type ReservationFilterPlugin interface {
 	framework.Plugin
-	FilterReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfo *ReservationInfo, nodeName string) *framework.Status
+	FilterReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfo *ReservationInfo, nodeInfo *framework.NodeInfo) *framework.Status
+	FilterNominateReservation(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, reservationInfo *ReservationInfo, nodeName string) *framework.Status
 }
 
 // ReservationNominator nominates a more suitable Reservation in the Reserve stage and Pod will bind this Reservation.
@@ -179,6 +187,7 @@ type ReservationScoreExtensions interface {
 // ResizePodPlugin is an interface that resize the pod resource spec after reserve.
 // If you want to use the feature, must enable the feature gate ResizePod=true
 type ResizePodPlugin interface {
+	framework.Plugin
 	ResizePod(ctx context.Context, cycleState *framework.CycleState, pod *corev1.Pod, nodeName string) *framework.Status
 }
 

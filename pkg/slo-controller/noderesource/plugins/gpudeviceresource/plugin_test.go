@@ -602,6 +602,14 @@ func TestPluginCalculate(t *testing.T) {
 			},
 		},
 	}
+	deviceMissingGPU := &schedulingv1alpha1.Device{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: testNode.Name,
+		},
+		Spec: schedulingv1alpha1.DeviceSpec{
+			Devices: []schedulingv1alpha1.DeviceInfo{},
+		},
+	}
 	type fields struct {
 		client ctrlclient.Client
 	}
@@ -667,6 +675,11 @@ func TestPluginCalculate(t *testing.T) {
 					Message:  UpdateResourcesMsg,
 				},
 				{
+					Name:     extension.ResourceGPUShared,
+					Quantity: resource.NewQuantity(200, resource.DecimalSI),
+					Message:  UpdateResourcesMsg,
+				},
+				{
 					Name: PluginName,
 					Labels: map[string]string{
 						extension.LabelGPUModel:         "A100",
@@ -703,6 +716,11 @@ func TestPluginCalculate(t *testing.T) {
 				},
 				{
 					Name:     extension.ResourceGPUMemoryRatio,
+					Quantity: resource.NewQuantity(200, resource.DecimalSI),
+					Message:  UpdateResourcesMsg,
+				},
+				{
+					Name:     extension.ResourceGPUShared,
 					Quantity: resource.NewQuantity(200, resource.DecimalSI),
 					Message:  UpdateResourcesMsg,
 				},
@@ -746,6 +764,11 @@ func TestPluginCalculate(t *testing.T) {
 					Quantity: resource.NewQuantity(200, resource.DecimalSI),
 					Message:  UpdateResourcesMsg,
 				},
+				{
+					Name:     extension.ResourceGPUShared,
+					Quantity: resource.NewQuantity(200, resource.DecimalSI),
+					Message:  UpdateResourcesMsg,
+				},
 			},
 			wantErr: false,
 		},
@@ -778,6 +801,11 @@ func TestPluginCalculate(t *testing.T) {
 					Quantity: resource.NewQuantity(200, resource.DecimalSI),
 					Message:  UpdateResourcesMsg,
 				},
+				{
+					Name:     extension.ResourceGPUShared,
+					Quantity: resource.NewQuantity(200, resource.DecimalSI),
+					Message:  UpdateResourcesMsg,
+				},
 			},
 			wantErr: false,
 		},
@@ -785,6 +813,43 @@ func TestPluginCalculate(t *testing.T) {
 			name: "calculate resetting device resources",
 			fields: fields{
 				client: fake.NewClientBuilder().WithScheme(testScheme).WithObjects(testNode).Build(),
+			},
+			args: args{
+				node: testNode,
+			},
+			want: []framework.ResourceItem{
+				{
+					Name:    extension.ResourceGPU,
+					Reset:   true,
+					Message: ResetResourcesMsg,
+				},
+				{
+					Name:    extension.ResourceGPUCore,
+					Reset:   true,
+					Message: ResetResourcesMsg,
+				},
+				{
+					Name:    extension.ResourceGPUMemory,
+					Reset:   true,
+					Message: ResetResourcesMsg,
+				},
+				{
+					Name:    extension.ResourceGPUMemoryRatio,
+					Reset:   true,
+					Message: ResetResourcesMsg,
+				},
+				{
+					Name:    extension.ResourceGPUShared,
+					Reset:   true,
+					Message: ResetResourcesMsg,
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "calculate resetting device resources",
+			fields: fields{
+				client: fake.NewClientBuilder().WithScheme(testScheme).WithObjects(testNode, deviceMissingGPU).Build(),
 			},
 			args: args{
 				node: testNode,
@@ -874,6 +939,7 @@ func Test_cleanupGPUNodeResource(t *testing.T) {
 				extension.ResourceGPUCore:        *resource.NewQuantity(200, resource.DecimalSI),
 				extension.ResourceGPUMemory:      *resource.NewScaledQuantity(18, 3),
 				extension.ResourceGPUMemoryRatio: *resource.NewQuantity(200, resource.DecimalSI),
+				extension.ResourceGPUShared:      *resource.NewQuantity(200, resource.DecimalSI),
 			},
 			Capacity: map[corev1.ResourceName]resource.Quantity{
 				corev1.ResourceCPU:               resource.MustParse("100"),
@@ -882,6 +948,7 @@ func Test_cleanupGPUNodeResource(t *testing.T) {
 				extension.ResourceGPUCore:        *resource.NewQuantity(200, resource.DecimalSI),
 				extension.ResourceGPUMemory:      *resource.NewScaledQuantity(18, 3),
 				extension.ResourceGPUMemoryRatio: *resource.NewQuantity(200, resource.DecimalSI),
+				extension.ResourceGPUShared:      *resource.NewQuantity(200, resource.DecimalSI),
 			},
 		},
 	}
@@ -900,6 +967,7 @@ func Test_cleanupGPUNodeResource(t *testing.T) {
 				extension.ResourceGPUCore:        *resource.NewQuantity(200, resource.DecimalSI),
 				extension.ResourceGPUMemory:      *resource.NewScaledQuantity(18, 3),
 				extension.ResourceGPUMemoryRatio: *resource.NewQuantity(200, resource.DecimalSI),
+				extension.ResourceGPUShared:      *resource.NewQuantity(200, resource.DecimalSI),
 			},
 			Capacity: map[corev1.ResourceName]resource.Quantity{
 				corev1.ResourceCPU:               resource.MustParse("100"),
@@ -908,6 +976,7 @@ func Test_cleanupGPUNodeResource(t *testing.T) {
 				extension.ResourceGPUCore:        *resource.NewQuantity(200, resource.DecimalSI),
 				extension.ResourceGPUMemory:      *resource.NewScaledQuantity(18, 3),
 				extension.ResourceGPUMemoryRatio: *resource.NewQuantity(200, resource.DecimalSI),
+				extension.ResourceGPUShared:      *resource.NewQuantity(200, resource.DecimalSI),
 			},
 		},
 	}
